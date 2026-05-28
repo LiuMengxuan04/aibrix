@@ -242,7 +242,35 @@ type PrometheusMetricValue struct {
 }
 
 func (p *PrometheusMetricValue) GetSimpleValue() float64 {
-	return 0.0
+	if p == nil || p.Result == nil || *p.Result == nil {
+		return 0.0
+	}
+
+	var value float64
+	switch result := (*p.Result).(type) {
+	case model.Vector:
+		if len(result) == 0 || result[0] == nil {
+			return 0.0
+		}
+		value = float64(result[0].Value)
+	case *model.Vector:
+		if result == nil || len(*result) == 0 || (*result)[0] == nil {
+			return 0.0
+		}
+		value = float64((*result)[0].Value)
+	case *model.Scalar:
+		if result == nil {
+			return 0.0
+		}
+		value = float64(result.Value)
+	default:
+		return 0.0
+	}
+
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0.0
+	}
+	return value
 }
 
 func (p *PrometheusMetricValue) GetHistogramValue() *HistogramMetricValue {
@@ -254,7 +282,19 @@ func (p *PrometheusMetricValue) GetPrometheusResult() *model.Value {
 }
 
 func (s *PrometheusMetricValue) GetLabelValues() map[string]string {
-	return map[string]string{}
+	if s == nil || s.Result == nil || *s.Result == nil {
+		return map[string]string{}
+	}
+	vector, ok := (*s.Result).(model.Vector)
+	if !ok || len(vector) == 0 || vector[0] == nil {
+		return map[string]string{}
+	}
+
+	labels := make(map[string]string, len(vector[0].Metric))
+	for key, value := range vector[0].Metric {
+		labels[string(key)] = string(value)
+	}
+	return labels
 }
 
 // PrometheusMetricValue represents Prometheus query results.

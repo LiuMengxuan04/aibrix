@@ -63,6 +63,10 @@ func (s *Server) HandleRequestHeaders(ctx context.Context, requestID string, req
 			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderRoutingStrategy:
 			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderSILTenant:
+			reqHeaders[n.Key] = string(n.RawValue)
+		case HeaderSILTraceRequestID:
+			reqHeaders[n.Key] = string(n.RawValue)
 		case HeaderConfigProfile:
 			reqConfigProfile = strings.TrimSpace(string(n.RawValue))
 		case HeaderSessionID:
