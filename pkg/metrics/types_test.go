@@ -151,7 +151,7 @@ func TestPrometheusMetricValue(t *testing.T) {
 	prometheusMetric := PrometheusMetricValue{Result: &value}
 
 	t.Run("GetSimpleValue", func(t *testing.T) {
-		assert.Equal(t, 0.0, prometheusMetric.GetSimpleValue())
+		assert.Equal(t, 123.45, prometheusMetric.GetSimpleValue())
 	})
 
 	t.Run("GetHistogramValue", func(t *testing.T) {
@@ -162,6 +162,17 @@ func TestPrometheusMetricValue(t *testing.T) {
 		r := prometheusMetric.GetPrometheusResult()
 		assert.NotNil(t, r)
 		assert.Equal(t, result.Type(), (*r).Type())
+	})
+
+	t.Run("GetLabelValues", func(t *testing.T) {
+		assert.Equal(t, map[string]string{"__name__": "test_metric"}, prometheusMetric.GetLabelValues())
+	})
+
+	t.Run("EmptyVector", func(t *testing.T) {
+		empty := model.Vector{}
+		var emptyValue model.Value = empty
+		assert.Equal(t, 0.0, (&PrometheusMetricValue{Result: &emptyValue}).GetSimpleValue())
+		assert.Equal(t, map[string]string{}, (&PrometheusMetricValue{Result: &emptyValue}).GetLabelValues())
 	})
 }
 

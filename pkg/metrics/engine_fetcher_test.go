@@ -293,6 +293,34 @@ func TestEngineMetricsFetcher_FetchAllTypedMetrics(t *testing.T) {
 	})
 }
 
+func TestEngineMetricsFetcherVllmRoutingMetricMappings(t *testing.T) {
+	const vllmRoutingMetrics = `# HELP vllm:num_requests_running Number of requests currently running on GPU.
+# TYPE vllm:num_requests_running gauge
+vllm:num_requests_running{model_name="llama-2-7b-vidur-dummy"} 2.0
+`
+
+	server := setupMockServer(vllmRoutingMetrics, 200, 0)
+	defer server.Close()
+
+	endpoint := strings.TrimPrefix(server.URL, "http://")
+	fetcher := NewEngineMetricsFetcher()
+
+	result, err := fetcher.FetchAllTypedMetrics(
+		context.Background(),
+		endpoint,
+		"vllm",
+		"test-pod",
+		[]string{EngineUtilization, GPUBusyTimeRatio},
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Contains(t, result.ModelMetrics, "llama-2-7b-vidur-dummy/"+EngineUtilization)
+	require.Equal(t, 2.0, result.ModelMetrics["llama-2-7b-vidur-dummy/"+EngineUtilization].GetSimpleValue())
+	require.Contains(t, result.Metrics, GPUBusyTimeRatio)
+	require.Equal(t, 2.0, result.Metrics[GPUBusyTimeRatio].GetSimpleValue())
+}
+
 func TestEngineMetricsFetcher_RetryLogic(t *testing.T) {
 	setupMockMetrics()
 

@@ -434,9 +434,22 @@ var (
 				Raw: Gauge,
 			},
 			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:num_requests_running",
 				"xllm": "engine_utilization",
 			},
-			Description: "GPU busy time ratio",
+			Description: "Engine utilization. vLLM does not expose xLLM-style engine_utilization, so AIBrix uses the live running-request count as a serving-level utilization proxy.",
+		},
+		GPUBusyTimeRatio: {
+			MetricScope:  PodMetricScope,
+			MetricSource: PodRawMetrics,
+			MetricType: MetricType{
+				Raw: Gauge,
+			},
+			EngineMetricsNameMapping: map[string]string{
+				"vllm": "vllm:num_requests_running",
+				"xllm": "gpu_busy_time_ratio",
+			},
+			Description: "GPU busy time ratio. For vLLM deployments without DCGM/GPU busy-time export, AIBrix uses the live running-request count as a serving-level busy proxy.",
 		},
 		CPUCacheUsagePerc: {
 			MetricScope:  PodModelMetricScope,

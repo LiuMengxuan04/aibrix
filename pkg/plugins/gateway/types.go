@@ -48,6 +48,8 @@ const (
 	HeaderTargetPodIP        = "target-pod-ip"
 	HeaderTargetPod          = "target-pod"
 	HeaderRoutingStrategy    = "routing-strategy"
+	HeaderSILTenant          = "x-sil-tenant"
+	HeaderSILTraceRequestID  = "x-sil-trace-request-id"
 	HeaderRequestID          = "request-id"
 	HeaderModel              = "model"
 	HeaderExternalFilter     = "external-filter"

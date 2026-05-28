@@ -73,6 +73,7 @@ var (
 		metrics.AvgPromptThroughputToksPerS,
 		metrics.AvgGenerationThroughputToksPerS,
 		metrics.GPUCacheUsagePerc,
+		metrics.GPUBusyTimeRatio,
 		metrics.CPUCacheUsagePerc,
 		metrics.EngineUtilization,
 	}
