@@ -53,6 +53,7 @@ const RouterCleanSILV12AgentL types.RoutingAlgorithm = "clean-sil-v12-agent-l"
 const RouterCleanSILV13AgentN types.RoutingAlgorithm = "clean-sil-v13-agent-n"
 const RouterCleanSILV13AgentP types.RoutingAlgorithm = "clean-sil-v13-agent-p"
 const RouterCleanSILV13AgentPTight types.RoutingAlgorithm = "clean-sil-v13-agent-p-tight"
+const RouterTokenAwareV4 types.RoutingAlgorithm = "token-aware-v4"
 const evolvedPartitionTenantHeader = "x-sil-tenant"
 const evolvedPartitionTraceRequestHeader = "x-sil-trace-request-id"
 
@@ -80,6 +81,7 @@ func init() {
 	Register(RouterCleanSILV13AgentN, NewCleanSILV13AgentNRouter)
 	Register(RouterCleanSILV13AgentP, NewCleanSILV13AgentPRouter)
 	Register(RouterCleanSILV13AgentPTight, NewCleanSILV13AgentPTightRouter)
+	Register(RouterTokenAwareV4, NewTokenAwareV4Router)
 }
 
 type evolvedPartitionTrackedRequest struct {
@@ -4701,3 +4703,173 @@ func stableReplicaIndex(requestID string, count int) int {
 	_, _ = h.Write([]byte(requestID + ":131"))
 	return int(h.Sum64() % uint64(count))
 }
+
+// --- token-aware-v4: SIL-evolved token-weighted least-outstanding router ---
+
+type tokenAwareV4TrackedRequest struct {
+	podName      string
+	promptTokens float64
+	decodeTokens float64
+}
+
+type tokenAwareV4TrackedKeyStruct struct{}
+
+var tokenAwareV4TrackedKey = tokenAwareV4TrackedKeyStruct{}
+
+type tokenAwareV4Router struct {
+	mu              sync.Mutex
+	pendingRequests map[string]int
+	pendingPrefill  map[string]float64
+	pendingDecode   map[string]float64
+	podGPU          map[string]int
+}
+
+func NewTokenAwareV4Router() (types.Router, error) {
+	router := &tokenAwareV4Router{
+		pendingRequests: make(map[string]int),
+		pendingPrefill:  make(map[string]float64),
+		pendingDecode:   make(map[string]float64),
+		podGPU:          make(map[string]int),
+	}
+	c, err := cache.Get()
+	if err == nil {
+		c.RegisterRequestTracker(router)
+	}
+	return router, nil
+}
+
+func (r *tokenAwareV4Router) Route(ctx *types.RoutingContext, readyPodList types.PodList) (string, error) {
+	readyPods := readyPodList.All()
+	if len(readyPods) == 0 {
+		return "", ErrorNoAvailablePod
+	}
+	r.rememberGPU(readyPods)
+	promptTokens := r.promptLen(ctx)
+	decodeTokens := r.outputLen(ctx)
+	target, _ := r.bestPod(readyPods)
+	if target == nil {
+		return "", ErrorNoAvailablePod
+	}
+	ctx.SetTargetPod(target)
+	r.addPending(ctx, target, promptTokens, decodeTokens)
+	return ctx.TargetAddress(), nil
+}
+
+func (r *tokenAwareV4Router) bestPod(pods []*v1.Pod) (*v1.Pod, float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var best *v1.Pod
+	bestScore := math.MaxFloat64
+	for _, pod := range pods {
+		reqs := float64(r.pendingRequests[pod.Name])
+		prefill := r.pendingPrefill[pod.Name]
+		decode := r.pendingDecode[pod.Name]
+		gpuID := r.podGPU[pod.Name]
+		sameGPU := 0.0
+		for otherName, otherGPU := range r.podGPU {
+			if otherGPU == gpuID && otherName != pod.Name {
+				sameGPU += float64(r.pendingRequests[otherName])
+			}
+		}
+		score := reqs*30.0 + prefill*0.8 + decode*2.5 + sameGPU*0.2
+		if score < bestScore {
+			best = pod
+			bestScore = score
+		} else if math.Abs(score-bestScore) < 1e-9 && best != nil && replicaID(pod) < replicaID(best) {
+			best = pod
+			bestScore = score
+		}
+	}
+	return best, bestScore
+}
+
+func (r *tokenAwareV4Router) rememberGPU(pods []*v1.Pod) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, pod := range pods {
+		if _, ok := r.podGPU[pod.Name]; !ok {
+			r.podGPU[pod.Name] = podGPUID(pod)
+		}
+	}
+}
+
+func (r *tokenAwareV4Router) addPending(ctx *types.RoutingContext, pod *v1.Pod, prompt, decode float64) {
+	if ctx.Value(tokenAwareV4TrackedKey) != nil {
+		return
+	}
+	ctx.Context = context.WithValue(ctx.Context, tokenAwareV4TrackedKey, tokenAwareV4TrackedRequest{
+		podName:      pod.Name,
+		promptTokens: prompt,
+		decodeTokens: decode,
+	})
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingRequests[pod.Name]++
+	r.pendingPrefill[pod.Name] += prompt
+	r.pendingDecode[pod.Name] += decode
+}
+
+func (r *tokenAwareV4Router) done(ctx *types.RoutingContext) {
+	if ctx == nil {
+		return
+	}
+	raw := ctx.Value(tokenAwareV4TrackedKey)
+	if raw == nil {
+		return
+	}
+	tracked, ok := raw.(tokenAwareV4TrackedRequest)
+	if !ok {
+		return
+	}
+	ctx.Context = context.WithValue(ctx.Context, tokenAwareV4TrackedKey, nil)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingRequests[tracked.podName]--
+	if r.pendingRequests[tracked.podName] < 0 {
+		r.pendingRequests[tracked.podName] = 0
+	}
+	r.pendingPrefill[tracked.podName] -= tracked.promptTokens
+	if r.pendingPrefill[tracked.podName] < 0 {
+		r.pendingPrefill[tracked.podName] = 0
+	}
+	r.pendingDecode[tracked.podName] -= tracked.decodeTokens
+	if r.pendingDecode[tracked.podName] < 0 {
+		r.pendingDecode[tracked.podName] = 0
+	}
+}
+
+func (r *tokenAwareV4Router) AddRequestCount(ctx *types.RoutingContext, requestID string, modelName string) int64 {
+	return 0
+}
+
+func (r *tokenAwareV4Router) DoneRequestCount(ctx *types.RoutingContext, requestID string, modelName string, traceTerm int64) {
+	r.done(ctx)
+}
+
+func (r *tokenAwareV4Router) DoneRequestTrace(ctx *types.RoutingContext, requestID string, modelName string, inputTokens, outputTokens, traceTerm int64) {
+	r.done(ctx)
+}
+
+func (r *tokenAwareV4Router) SubscribedMetrics() []string {
+	return []string{}
+}
+
+func (r *tokenAwareV4Router) promptLen(ctx *types.RoutingContext) float64 {
+	if tokens, err := ctx.PromptLength(); err == nil && tokens > 0 {
+		return float64(tokens)
+	}
+	return 1.0
+}
+
+func (r *tokenAwareV4Router) outputLen(ctx *types.RoutingContext) float64 {
+	var body struct {
+		MaxTokens int `json:"max_tokens"`
+	}
+	if json.Unmarshal(ctx.ReqBody, &body) == nil && body.MaxTokens > 0 {
+		return float64(body.MaxTokens)
+	}
+	return 55.0
+}
+
+var _ types.Router = (*tokenAwareV4Router)(nil)
+var _ cache.RequestTracker = (*tokenAwareV4Router)(nil)
